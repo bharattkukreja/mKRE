@@ -1,0 +1,139 @@
+/*
+Copyright 2020 Google LLC
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package trigger
+
+import (
+	"context"
+
+	"github.com/google/knative-gcp/pkg/reconciler/celltenant"
+
+	"cloud.google.com/go/pubsub"
+	"go.uber.org/zap"
+	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/client-go/tools/cache"
+
+	"github.com/google/knative-gcp/pkg/logging"
+	"knative.dev/eventing/pkg/apis/eventing"
+	"knative.dev/eventing/pkg/duck"
+	"knative.dev/pkg/client/injection/ducks/duck/v1/addressable"
+	"knative.dev/pkg/client/injection/ducks/duck/v1/source"
+	"knative.dev/pkg/configmap"
+	"knative.dev/pkg/controller"
+	pkgcontroller "knative.dev/pkg/controller"
+	"knative.dev/pkg/injection"
+	"knative.dev/pkg/resolver"
+
+	brokerv1beta1 "github.com/google/knative-gcp/pkg/apis/broker/v1beta1"
+	"github.com/google/knative-gcp/pkg/apis/configs/dataresidency"
+	brokerinformer "github.com/google/knative-gcp/pkg/client/injection/informers/broker/v1beta1/broker"
+	triggerinformer "github.com/google/knative-gcp/pkg/client/injection/informers/broker/v1beta1/trigger"
+	triggerreconciler "github.com/google/knative-gcp/pkg/client/injection/reconciler/broker/v1beta1/trigger"
+	"github.com/google/knative-gcp/pkg/reconciler"
+	reconcilerutils "github.com/google/knative-gcp/pkg/reconciler/utils"
+	"github.com/google/knative-gcp/pkg/utils"
+)
+
+const (
+	// controllerAgentName is the string used by this controller to identify
+	// itself when creating events.
+	controllerAgentName = "trigger-controller"
+	// finalizerName is the name of the finalizer that this controller adds to the Triggers that it reconciles.
+	finalizerName = "googlecloud"
+)
+
+type Constructor injection.ControllerConstructor
+
+// NewConstructor creates a constructor to make a Trigger controller.
+func NewConstructor(dataresidencyss *dataresidency.StoreSingleton) Constructor {
+	return func(ctx context.Context, cmw configmap.Watcher) *controller.Impl {
+		return newController(ctx, cmw, dataresidencyss.Store(ctx, cmw))
+	}
+}
+
+func newController(ctx context.Context, cmw configmap.Watcher, drs *dataresidency.Store) *controller.Impl {
+	triggerInformer := triggerinformer.Get(ctx)
+
+	var client *pubsub.Client
+	// If there is an error, the projectID will be empty. The reconciler will retry
+	// to get the projectID during reconciliation.
+	projectID, err := utils.ProjectIDOrDefault("")
+	if err != nil {
+		logging.FromContext(ctx).Error("Failed to get project ID", zap.Error(err))
+	} else {
+		// Attempt to create a pubsub client for all worker threads to use. If this
+		// fails, pass a nil value to the Reconciler. They will attempt to
+		// create a client on reconcile.
+		if client, err = pubsub.NewClient(ctx, projectID); err != nil {
+			client = nil
+			logging.FromContext(ctx).Error("Failed to create controller-wide Pub/Sub client", zap.Error(err))
+		}
+	}
+
+	if client != nil {
+		go func() {
+			<-ctx.Done()
+			client.Close()
+		}()
+	}
+	r := &Reconciler{
+		Base:         reconciler.NewBase(ctx, controllerAgentName, cmw),
+		brokerLister: brokerinformer.Get(ctx).Lister(),
+		targetReconciler: &celltenant.TargetReconciler{
+			ProjectID:          projectID,
+			PubsubClient:       client,
+			DataresidencyStore: drs,
+		},
+	}
+
+	impl := triggerreconciler.NewImpl(ctx, r, withAgentAndFinalizer)
+	r.sourceTracker = duck.NewListableTracker(ctx, source.Get, impl.EnqueueKey, controller.GetTrackerLease(ctx))
+	r.addressableTracker = duck.NewListableTracker(ctx, addressable.Get, impl.EnqueueKey, controller.GetTrackerLease(ctx))
+	r.uriResolver = resolver.NewURIResolver(ctx, impl.EnqueueKey)
+
+	r.Logger.Info("Setting up event handlers")
+
+	triggerInformer.Informer().AddEventHandlerWithResyncPeriod(controller.HandleAll(impl.Enqueue), reconciler.DefaultResyncPeriod)
+
+	// Watch brokers.
+	brokerinformer.Get(ctx).Informer().AddEventHandler(
+		cache.FilteringResourceEventHandler{
+			// Only care about brokers with proper brokerclass
+			FilterFunc: reconcilerutils.BrokerClassFilter,
+			Handler: controller.HandleAll(func(obj interface{}) {
+				if b, ok := obj.(*brokerv1beta1.Broker); ok {
+					triggers, err := triggerinformer.Get(ctx).Lister().Triggers(b.Namespace).List(labels.SelectorFromSet(map[string]string{eventing.BrokerLabelKey: b.Name}))
+					if err != nil {
+						r.Logger.Warn("Failed to list triggers", zap.String("Namespace", b.Namespace), zap.String("Broker", b.Name))
+						return
+					}
+					for _, trigger := range triggers {
+						impl.Enqueue(trigger)
+					}
+				}
+			}),
+		},
+	)
+
+	return impl
+}
+
+func withAgentAndFinalizer(_ *pkgcontroller.Impl) pkgcontroller.Options {
+	return pkgcontroller.Options{
+		FinalizerName: finalizerName,
+		AgentName:     controllerAgentName,
+	}
+}

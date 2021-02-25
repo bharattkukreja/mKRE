@@ -1,0 +1,39 @@
+approvers:
+- grantr
+- ian-mi
+- yolocs
+- grac3gao
+- nlopezgi
+- tommyreddad
+- danyinggu
+- zhongduo
+- tayarani
+- Ectelion
+- eclipselu
+- cathyzhyi
+- AlexandraRoatis
+- stuart-xyz
+- MohamedElhawaty
+- bharattkukreja
+
+# Reviewers are suggested from the reviewers list first, then the approvers
+# list. To add reviewers while spreading the load among existing approvers,
+# copy the approvers to the reviewers list too.
+reviewers:
+- grantr
+- ian-mi
+- yolocs
+# Add reviewers below
+- grac3gao
+- nlopezgi
+- tommyreddad
+- zhongduo
+- danyinggu
+- tayarani
+- Ectelion
+- eclipselu
+- cathyzhyi
+- AlexandraRoatis
+- stuart-xyz
+- MohamedElhawaty
+- bharattkukreja

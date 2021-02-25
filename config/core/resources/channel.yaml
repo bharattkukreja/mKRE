@@ -1,0 +1,169 @@
+# Copyright 2020 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: channels.messaging.cloud.google.com
+  labels:
+    events.cloud.google.com/release: devel
+    events.cloud.google.com/crd-install: "true"
+    messaging.knative.dev/subscribable: "true"
+    duck.knative.dev/addressable: "true"
+spec:
+  group: messaging.cloud.google.com
+  names:
+    kind: Channel
+    plural: channels
+    singular: channel
+    categories:
+      - all
+      - knative
+      - pubsub
+      - messaging
+      - channel
+    shortNames:
+      - pschan
+  scope: Namespaced
+  preserveUnknownFields: false
+  conversion:
+    strategy: Webhook
+    webhook:
+      # conversionReviewVersions indicates what ConversionReview versions are understood/preferred by the webhook.
+      # The first version in the list understood by the API server is sent to the webhook.
+      # The webhook must respond with a ConversionReview object in the same version it received.
+      conversionReviewVersions: ["v1", "v1beta1"]
+      clientConfig:
+        service:
+          name: webhook
+          namespace: events-system
+  versions:
+    - &version
+      name: v1beta1
+      served: true
+      storage: true
+      subresources:
+        status: { }
+      additionalPrinterColumns:
+        - name: Ready
+          type: string
+          jsonPath: ".status.conditions[?(@.type==\"Ready\")].status"
+        - name: Reason
+          type: string
+          jsonPath: ".status.conditions[?(@.type==\"Ready\")].reason"
+        - name: Address
+          type: string
+          jsonPath: .status.address.url
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              properties:
+                subscribers:
+                  type: array
+                  items:
+                    type: object
+                    required:
+                      - uid
+                    properties:
+                      uid:
+                        type: string
+                        minLength: 1
+                      generation:
+                        type: integer
+                      subscriberUri:
+                        type: string
+                      replyUri:
+                        type: string
+                      delivery:
+                        type: object
+                        properties:
+                          deadLetterSink:
+                            type: object
+                            properties:
+                              ref:
+                                type: object
+                                properties:
+                                  kind:
+                                    type: string
+                                  namespace:
+                                    type: string
+                                  name:
+                                    type: string
+                                  apiVersion:
+                                    type: string
+                              uri:
+                                type: string
+                          retry:
+                            type: integer
+                          backoffPolicy:
+                            type: string
+                          backoffDelay:
+                            type: string
+            status:
+              type: object
+              properties:
+                # No subscribable in v1beta1
+                observedGeneration:
+                  type: integer
+                  format: int64
+                conditions:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      lastTransitionTime:
+                        # We use a string in the stored object but a wrapper object at runtime.
+                        type: string
+                      message:
+                        type: string
+                      reason:
+                        type: string
+                      severity:
+                        type: string
+                      status:
+                        type: string
+                      type:
+                        type: string
+                    required:
+                      - type
+                      - status
+                address:
+                  type: object
+                  properties:
+                    url:
+                      type: string
+                subscribers:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      uid:
+                        type: string
+                      observedGeneration:
+                        type: integer
+                        format: int64
+                      ready:
+                        type: string
+                      message:
+                        type: string
+                projectId:
+                  type: string
+                topicId:
+                  type: string
